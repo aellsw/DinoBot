@@ -1,20 +1,21 @@
-// Require necessary discord.js classes
+const fs = require('fs');
+const path = require('path');
 const {
     Client,
     GatewayIntentBits,
     REST,
     Routes,
-    SlashCommandBuilder,
+    Collection,
+    EmbedBuilder,
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
     ModalBuilder,
     TextInputBuilder,
-    TextInputStyle,
-    EmbedBuilder
+    TextInputStyle
 } = require('discord.js');
 const mysql = require('mysql2');
-require('dotenv').config(); // Load environment variables
+require('dotenv').config();
 
 // Create a new client instance
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -27,18 +28,18 @@ const pool = mysql.createPool({
     database: process.env.DB_NAME
 }).promise();
 
-// Define the /savedino command
-const commands = [
-    new SlashCommandBuilder()
-        .setName('savedino')
-        .setDescription('Saves a dinosaur (placeholder - no functionality yet)')
-        .toJSON(),
-    new SlashCommandBuilder()
-        .setName('resetverify')
-        .setDescription('Admin only: Reset the verification message in the verification channel')
-        .setDefaultMemberPermissions('0') // Requires administrator permission
-        .toJSON()
-];
+// Load commands dynamically
+client.commands = new Collection();
+const commands = [];
+const commandsPath = path.join(__dirname, 'commands'); // Create a 'commands' folder
+const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+
+for (const file of commandFiles) {
+    const filePath = path.join(commandsPath, file);
+    const command = require(filePath);
+    client.commands.set(command.data.name, command);
+    commands.push(command.data.toJSON());
+}
 
 // Register slash commands
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -47,9 +48,9 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 async function saveSteamID(discordID, steamID) {
     try {
         const query = `
-            INSERT INTO ${process.env.DP_TABLE} (DiscordID, SteamID)
+            INSERT INTO ${process.env.DB_TABLE} (DiscordID, SteamID)
             VALUES (?, ?)
-            ON DUPLICATE KEY UPDATE SteamID = VALUES(SteamID);
+                ON DUPLICATE KEY UPDATE SteamID = VALUES(SteamID);
         `;
         const [result] = await pool.query(query, [discordID, steamID]);
         console.log(`✅ Steam ID ${steamID} linked to Discord ID ${discordID}`);
@@ -143,47 +144,14 @@ function setupVerificationSystem(client) {
         }
 
         if (interaction.isCommand()) {
-            const { commandName } = interaction;
+            const command = client.commands.get(interaction.commandName);
+            if (!command) return;
 
-            if (commandName === 'savedino') {
-                await interaction.reply({ content: 'This command will save a dinosaur in the future!', ephemeral: true });
-            }
-
-            if (commandName === 'resetverify') {
-                const verificationChannelId = process.env.VERIFICATION_CHANNEL_ID;
-                if (!verificationChannelId) {
-                    return interaction.reply({
-                        content: 'Error: VERIFICATION_CHANNEL_ID not set in environment variables',
-                        ephemeral: true
-                    });
-                }
-
-                const channel = client.channels.cache.get(verificationChannelId);
-                if (!channel) {
-                    return interaction.reply({
-                        content: `Error: Could not find channel with ID ${verificationChannelId}`,
-                        ephemeral: true
-                    });
-                }
-
-                // Delete existing verification messages
-                const messages = await channel.messages.fetch({ limit: 10 });
-                const existingVerifyMsgs = messages.filter(msg =>
-                    msg.author.id === client.user.id &&
-                    msg.embeds.length > 0 &&
-                    msg.embeds[0].title === 'Steam Account Verification'
-                );
-
-                for (const msg of existingVerifyMsgs.values()) {
-                    await msg.delete().catch(console.error);
-                }
-
-                // Send a new verification message
-                await sendVerificationMessage(channel);
-                await interaction.reply({
-                    content: 'Verification message has been reset in the verification channel',
-                    ephemeral: true
-                });
+            try {
+                await command.execute(interaction);
+            } catch (error) {
+                console.error(error);
+                await interaction.reply({ content: 'There was an error executing this command.', ephemeral: true });
             }
         }
     });
@@ -196,7 +164,7 @@ client.once('ready', async () => {
 
         await rest.put(
             Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-            { body: commands },
+            { body: commands }
         );
 
         console.log('Successfully reloaded application (/) commands.');
