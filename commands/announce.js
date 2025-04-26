@@ -100,6 +100,7 @@ async function execute(interaction) {
         });
     }
 }
+
 // Export the command data and execute function
 module.exports = {
     data,
